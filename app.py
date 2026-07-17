@@ -449,6 +449,7 @@ border:none;background:#3a3a3c;color:#eee}
 <div class="tabs" id="tabs">
 <button data-t="today" class="on">★ Сегодня</button>
 <button data-t="upcoming">Планы</button>
+<button data-t="projects">Проекты</button>
 <button data-t="inbox">Входящие</button>
 <button data-t="someday">Когда-нибудь</button>
 <button data-t="logbook">Журнал</button>
@@ -525,6 +526,22 @@ function row(t,showDay){
 }
 function render(){
   const el=document.getElementById('list');
+  if(tab==='projects'){
+    // Все открытые задачи, сгруппированные по проектам (спискам)
+    const open=tasks.filter(t=>!t.deleted&&!t.is_trashed&&!t.is_completed);
+    const groups={};
+    for(const t of open){const k=t.project||'Без проекта';(groups[k]=groups[k]||[]).push(t)}
+    const keys=Object.keys(groups).sort((a,b)=>
+      (a==='Без проекта')-(b==='Без проекта')||a.localeCompare(b,'ru'));
+    if(!keys.length){el.innerHTML='<div class="hint">Пусто. Проект создаётся в задаче: открой задачу → поле «Проект» → впиши название.</div>';return}
+    let html='';
+    for(const k of keys){
+      html+='<h2>'+esc(k)+' ('+groups[k].length+')</h2>';
+      html+=groups[k].map(t=>row(t,true)).join('');
+    }
+    el.innerHTML=html;
+    return;
+  }
   let items=tasks.filter(t=>bucket(t)===tab);
   if(!items.length){el.innerHTML='<div class="hint">Пусто</div>';return}
   if(tab==='today'){

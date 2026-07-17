@@ -4,7 +4,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py .
+COPY app.py icon.png ./
 
 RUN useradd -m appuser && mkdir -p /data && chown appuser /data
 USER appuser
