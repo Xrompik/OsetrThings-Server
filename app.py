@@ -12,6 +12,7 @@ OsetrThings Server v2.1 — работает 24/7 на облачном серв
 import asyncio
 import hashlib
 import hmac
+import json
 import os
 import re
 import sqlite3
@@ -52,6 +53,16 @@ db.execute("""CREATE TABLE IF NOT EXISTS tasks (
     deleted INTEGER NOT NULL DEFAULT 0
 )""")
 db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+# Новые колонки (проекты, теги, чек-листы) — добавляем к существующей базе
+for _ddl in (
+    "ALTER TABLE tasks ADD COLUMN project TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE tasks ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE tasks ADD COLUMN checklist TEXT NOT NULL DEFAULT '[]'",
+):
+    try:
+        db.execute(_ddl)
+    except sqlite3.OperationalError:
+        pass
 db.commit()
 
 
@@ -168,6 +179,8 @@ def rollover_overdue():
 
 
 def format_today_list():
+    """Нумерованный список на сегодня; порядок запоминается,
+    чтобы работала команда «Задача 3 выполнена»."""
     rollover_overdue()
     today = now_local().date()
     rows = db.execute(
@@ -176,14 +189,20 @@ def format_today_list():
     ).fetchall()
     rows = [r for r in rows if local_day(r["due_date"]) == today]
     if not rows:
+        meta_set("tg_list", "[]")
         return "На сегодня ничего не запланировано 🎉"
+    meta_set("tg_list", json.dumps([r["uuid"] for r in rows]))
     lines = ["✅ Задачи на сегодня:"]
-    for r in rows:
-        line = "• "
+    for i, r in enumerate(rows, start=1):
+        line = f"{i}. "
         if r["has_time"]:
             line += parse_iso(r["due_date"]).astimezone(TZ).strftime("%H:%M") + " — "
         line += r["title"]
+        if r["project"]:
+            line += f" [{r['project']}]"
         lines.append(line)
+    lines.append("")
+    lines.append("Напиши «Задача N выполнена» — отмечу.")
     return "\n".join(lines)
 
 
@@ -224,6 +243,23 @@ async def on_text(message: Message):
     text = message.text.strip()
     if re.search(r"какие\s+дела", text, re.IGNORECASE) or text == "/today":
         await message.answer(format_today_list())
+        return
+
+    # «Задача 3 выполнена» — отметить по номеру из последнего списка
+    m = re.search(r"задач[аиу]\s*№?\s*(\d+)\s*[-—:]?\s*(выполнен|сделан|готов|заверш)",
+                  text, re.IGNORECASE)
+    if m:
+        index = int(m.group(1)) - 1
+        uuids = json.loads(meta_get("tg_list") or "[]")
+        if 0 <= index < len(uuids):
+            row = db.execute("SELECT title FROM tasks WHERE uuid=?", (uuids[index],)).fetchone()
+            db.execute("UPDATE tasks SET is_completed=1, updated_at=? WHERE uuid=?",
+                       (time.time(), uuids[index]))
+            db.commit()
+            title = row["title"] if row else "задача"
+            await message.answer(f"✅ «{title}» отмечена выполненной")
+        else:
+            await message.answer("Не нашёл задачу с таким номером — спроси «Какие дела?» ещё раз")
         return
 
     title, due_iso, has_time = parse_task_text(text)
@@ -272,20 +308,24 @@ async def api_upsert(request: Request):
     t = await request.json()
     db.execute(
         """INSERT INTO tasks (uuid,title,note,is_completed,is_someday,is_trashed,
-           due_date,has_time,duration_minutes,updated_at,deleted)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)
+           due_date,has_time,duration_minutes,updated_at,deleted,project,tags,checklist)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(uuid) DO UPDATE SET
            title=excluded.title, note=excluded.note, is_completed=excluded.is_completed,
            is_someday=excluded.is_someday, is_trashed=excluded.is_trashed,
            due_date=excluded.due_date, has_time=excluded.has_time,
            duration_minutes=excluded.duration_minutes, updated_at=excluded.updated_at,
-           deleted=excluded.deleted
+           deleted=excluded.deleted, project=excluded.project, tags=excluded.tags,
+           checklist=excluded.checklist
            WHERE excluded.updated_at >= tasks.updated_at""",
         (t["uuid"], t.get("title", ""), t.get("note", ""),
          int(t.get("is_completed", False)), int(t.get("is_someday", False)),
          int(t.get("is_trashed", False)), t.get("due_date"),
          int(t.get("has_time", False)), t.get("duration_minutes", 60),
-         t.get("updated_at", time.time()), int(bool(t.get("deleted")))),
+         t.get("updated_at", time.time()), int(bool(t.get("deleted"))),
+         str(t.get("project") or ""),
+         json.dumps(t.get("tags") or [], ensure_ascii=False),
+         json.dumps(t.get("checklist") or [], ensure_ascii=False)),
     )
     db.commit()
     return {"ok": True}
@@ -304,6 +344,9 @@ async def api_changes(request: Request, since: float = 0):
             "is_trashed": bool(r["is_trashed"]), "due_date": r["due_date"],
             "has_time": bool(r["has_time"]), "duration_minutes": r["duration_minutes"],
             "updated_at": r["updated_at"], "deleted": bool(r["deleted"]),
+            "project": r["project"] or None,
+            "tags": json.loads(r["tags"] or "[]"),
+            "checklist": json.loads(r["checklist"] or "[]"),
         }
         for r in rows
     ]
@@ -350,6 +393,7 @@ APP_HTML = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="OsetrThings">
 <link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon.png">
 <title>OsetrThings</title><style>
 :root{color-scheme:dark}
 *{box-sizing:border-box}
@@ -378,6 +422,14 @@ text-overflow:ellipsis}
 .time{color:#ff453a;font-variant-numeric:tabular-nums;margin-right:4px;font-size:14px}
 .star{color:#ffd60a;font-size:12px}
 .hint{color:#8e8e93;font-size:14px;padding:10px 4px}
+.badge{font-size:11px;color:#8e8e93;background:#2c2c2e;border-radius:8px;
+padding:1px 7px;margin-left:6px;white-space:nowrap}
+.tagchip{font-size:11px;border-radius:8px;padding:1px 7px;margin-left:4px;white-space:nowrap}
+.ci{display:flex;gap:10px;align-items:center;padding:7px 2px;font-size:15px}
+.ci .cbox{width:18px;height:18px;border:1.5px solid #8e8e93;border-radius:50%;flex-shrink:0}
+.ci.don .cbox{background:#0a84ff;border-color:#0a84ff}
+.ci.don .ct{text-decoration:line-through;color:#8e8e93}
+.ci .del{margin-left:auto;color:#8e8e93;padding:0 6px}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;
 align-items:flex-end;justify-content:center;z-index:9}
 .sheet{background:#242426;border-radius:16px 16px 0 0;width:100%;max-width:560px;
@@ -409,7 +461,16 @@ enterkeyhint="done"><button onclick="add()">＋</button></div>
 <div id="modal" class="overlay" style="display:none" onclick="if(event.target===this)closeModal()">
 <div class="sheet">
 <textarea id="m_title" rows="2" placeholder="Название"></textarea>
-<textarea id="m_note" rows="4" placeholder="Заметки"></textarea>
+<textarea id="m_note" rows="3" placeholder="Заметки"></textarea>
+<div id="m_check"></div>
+<div class="row" style="gap:8px">
+ <input id="m_newitem" placeholder="＋ пункт чек-листа" style="flex:1"
+  onkeydown="if(event.key==='Enter')addCheck()">
+</div>
+<div class="row"><span>Проект</span>
+ <input id="m_project" list="projlist" placeholder="без проекта"><datalist id="projlist"></datalist></div>
+<div class="row"><span>Теги</span>
+ <input id="m_tags" placeholder="через запятую" style="min-width:55%"></div>
 <div class="row"><span>Дата</span><input type="date" id="m_date"></div>
 <div class="row"><span>Время</span><input type="time" id="m_time"></div>
 <div class="row"><span>Когда-нибудь</span><input type="checkbox" id="m_someday"></div>
@@ -422,7 +483,7 @@ enterkeyhint="done"><button onclick="add()">＋</button></div>
 </div></div>
 
 <script>
-let TODAY='', tasks=[], tab='today', cur=null;
+let TODAY='', tasks=[], tab='today', cur=null, PROJECTS=[];
 
 document.getElementById('tabs').addEventListener('click', e=>{
   const b=e.target.closest('button'); if(!b)return;
@@ -434,7 +495,7 @@ document.getElementById('inp').addEventListener('keydown',e=>{if(e.key==='Enter'
 
 async function load(){
   const r=await fetch('/web/all'); if(r.status===401){location='/login';return}
-  const d=await r.json(); TODAY=d.today; tasks=d.tasks; render();
+  const d=await r.json(); TODAY=d.today; tasks=d.tasks; PROJECTS=d.projects||[]; render();
 }
 function esc(s){const e=document.createElement('span');e.textContent=s||'';return e.innerHTML}
 function bucket(t){
@@ -446,13 +507,19 @@ function bucket(t){
   return t.day<=TODAY?'today':'upcoming';
 }
 function row(t,showDay){
+  const cl=(t.checklist||[]);
+  const done=cl.filter(x=>x.done).length;
   return `<div class="task ${t.is_completed?'done':''}">
   <div class="box" onclick="toggle('${t.uuid}');event.stopPropagation()"></div>
   <div class="body" onclick="openModal('${t.uuid}')">
    <div class="tt">${tab==='today'&&!t.is_completed?'<span class=star>★</span> ':''}
     ${t.time?'<span class=time>'+t.time+'</span>':''}
     ${showDay&&t.day?'<span class=time>'+t.day.slice(8,10)+'.'+t.day.slice(5,7)+'</span>':''}
-    ${esc(t.title)}</div>
+    ${esc(t.title)}
+    ${cl.length?'<span class=badge>'+done+'/'+cl.length+'</span>':''}
+    ${t.project?'<span class=badge>'+esc(t.project)+'</span>':''}
+    ${(t.tags||[]).map(x=>'<span class=tagchip style="color:#'+x.color+';background:#'+x.color+'22">'+esc(x.name)+'</span>').join('')}
+   </div>
    ${t.note?'<div class="sub">'+esc(t.note)+'</div>':''}
   </div></div>`;
 }
@@ -487,11 +554,27 @@ async function add(){
   await post('/web/add',{text:v,target:tab});
 }
 async function toggle(u){await post('/web/toggle',{uuid:u})}
+let editCheck=[];
+function renderCheck(){
+  m_check.innerHTML=editCheck.map((c,i)=>`<div class="ci ${c.done?'don':''}">
+   <div class="cbox" onclick="editCheck[${i}].done=!editCheck[${i}].done;renderCheck()"></div>
+   <span class="ct">${esc(c.text)}</span>
+   <span class="del" onclick="editCheck.splice(${i},1);renderCheck()">✕</span></div>`).join('');
+}
+function addCheck(){
+  const v=m_newitem.value.trim();if(!v)return;
+  editCheck.push({text:v,done:false});m_newitem.value='';renderCheck();
+}
 function openModal(u){
   cur=tasks.find(t=>t.uuid===u);if(!cur)return;
   m_title.value=cur.title;m_note.value=cur.note||'';
   m_date.value=cur.day||'';m_time.value=cur.time||'';
   m_someday.checked=!!cur.is_someday;
+  m_project.value=cur.project||'';
+  m_tags.value=(cur.tags||[]).map(x=>x.name).join(', ');
+  editCheck=(cur.checklist||[]).map(x=>({text:x.text,done:!!x.done}));
+  renderCheck();
+  projlist.innerHTML=PROJECTS.map(p=>'<option value="'+esc(p)+'">').join('');
   m_trash.style.display=cur.is_trashed?'none':'';
   m_restore.style.display=cur.is_trashed?'':'none';
   m_delete.style.display=cur.is_trashed?'':'none';
@@ -502,7 +585,10 @@ async function saveModal(){
   if(!cur)return;
   await post('/web/update',{uuid:cur.uuid,title:m_title.value.trim(),
    note:m_note.value.trim(),date:m_date.value||null,time:m_time.value||null,
-   is_someday:m_someday.checked});
+   is_someday:m_someday.checked,
+   project:m_project.value.trim(),
+   tags:m_tags.value.split(',').map(s=>s.trim()).filter(Boolean),
+   checklist:editCheck});
   closeModal();
 }
 async function trashModal(){if(!cur)return;
@@ -528,7 +614,7 @@ async def manifest():
         "name": "OsetrThings", "short_name": "OsetrThings",
         "start_url": "/", "display": "standalone",
         "background_color": "#1c1c1e", "theme_color": "#1c1c1e",
-        "icons": [],
+        "icons": [{"src": "/icon.png", "sizes": "1024x1024", "type": "image/png"}],
     }
 
 
@@ -544,6 +630,9 @@ def task_dto(r):
         "is_completed": bool(r["is_completed"]), "is_someday": bool(r["is_someday"]),
         "is_trashed": bool(r["is_trashed"]), "deleted": bool(r["deleted"]),
         "day": day, "time": time_str,
+        "project": r["project"] or None,
+        "tags": json.loads(r["tags"] or "[]"),
+        "checklist": json.loads(r["checklist"] or "[]"),
     }
 
 
@@ -553,8 +642,18 @@ async def web_all(request: Request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     rollover_overdue()
     rows = db.execute("SELECT * FROM tasks WHERE deleted=0 ORDER BY updated_at").fetchall()
+    projects = sorted({r["project"] for r in rows if r["project"]})
     return {"today": now_local().strftime("%Y-%m-%d"),
-            "tasks": [task_dto(r) for r in rows]}
+            "tasks": [task_dto(r) for r in rows],
+            "projects": projects}
+
+
+@app.get("/icon.png")
+async def icon():
+    if os.path.exists("icon.png"):
+        with open("icon.png", "rb") as f:
+            return Response(content=f.read(), media_type="image/png")
+    return Response(status_code=404)
 
 
 @app.post("/web/add")
@@ -610,6 +709,23 @@ async def web_update(request: Request):
         fields["is_completed"] = int(bool(body["is_completed"]))
     if "deleted" in body:
         fields["deleted"] = int(bool(body["deleted"]))
+    if "project" in body:
+        fields["project"] = str(body.get("project") or "").strip()
+    if "tags" in body:
+        names = [str(x).strip() for x in (body["tags"] or []) if str(x).strip()]
+        # цвета берём из уже известных тегов
+        color_map = {}
+        for r2 in db.execute("SELECT tags FROM tasks").fetchall():
+            for tg in json.loads(r2["tags"] or "[]"):
+                color_map[tg.get("name", "").lower()] = tg.get("color", "5E8D5A")
+        fields["tags"] = json.dumps(
+            [{"name": n, "color": color_map.get(n.lower(), "5E8D5A")} for n in names],
+            ensure_ascii=False)
+    if "checklist" in body:
+        fields["checklist"] = json.dumps(
+            [{"text": str(i.get("text", "")), "done": bool(i.get("done"))}
+             for i in (body["checklist"] or [])],
+            ensure_ascii=False)
 
     # Дата и время: date "YYYY-MM-DD" | null, time "HH:MM" | null
     if "date" in body:
