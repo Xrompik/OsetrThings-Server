@@ -1,14 +1,12 @@
 """
-OsetrThings Server — работает 24/7 на вашем облачном сервере.
+OsetrThings Server v2.1 — работает 24/7 на облачном сервере.
 
-Что делает:
-1. Telegram-бот @OsetrPlansBot: текст -> задача (понимает «сегодня/завтра/послезавтра»,
-   даты 17.07 и время «в 15:30»); «Какие дела?» -> список на сегодня.
-2. Веб-страница для iPhone (тёмная, компактная), защищена паролем.
-3. API для синхронизации с Mac-приложением OsetrThings (заголовок X-Token).
+1. Telegram-бот @OsetrPlansBot: текст -> задача (понимает даты), «Какие дела?» -> список.
+2. Веб-приложение для iPhone: вкладки Сегодня/Планы/Входящие/Когда-нибудь/Журнал/Корзина,
+   добавление, редактирование, выполнение, корзина. Защищено паролем.
+3. API синхронизации с Mac-приложением OsetrThings (заголовок X-Token).
 
-Настройки берутся из переменных окружения (.env): BOT_TOKEN, WEB_PASSWORD,
-API_TOKEN, SECRET, TZ.
+Настройки из переменных окружения: BOT_TOKEN, WEB_PASSWORD, API_TOKEN, SECRET, TZ.
 """
 
 import asyncio
@@ -29,9 +27,6 @@ from aiogram.types import Message
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-# ----------------------------------------------------------------------------
-# Конфигурация
-# ----------------------------------------------------------------------------
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 WEB_PASSWORD = os.environ["WEB_PASSWORD"]
 API_TOKEN = os.environ["API_TOKEN"]
@@ -41,9 +36,6 @@ DB_PATH = os.environ.get("DB_PATH", "/data/tasks.db")
 
 COOKIE_VALUE = hmac.new(SECRET.encode(), b"osetrthings-auth", hashlib.sha256).hexdigest()
 
-# ----------------------------------------------------------------------------
-# База данных
-# ----------------------------------------------------------------------------
 db = sqlite3.connect(DB_PATH, check_same_thread=False)
 db.row_factory = sqlite3.Row
 db.execute("""CREATE TABLE IF NOT EXISTS tasks (
@@ -73,9 +65,6 @@ def meta_set(key, value):
     db.commit()
 
 
-# ----------------------------------------------------------------------------
-# Даты
-# ----------------------------------------------------------------------------
 def now_local():
     return datetime.now(TZ)
 
@@ -99,14 +88,10 @@ def parse_iso(s):
 
 
 def local_day(s):
-    """Дата (день) задачи в местном времени."""
     dt = parse_iso(s)
     return dt.astimezone(TZ).date() if dt else None
 
 
-# ----------------------------------------------------------------------------
-# Разбор текста задачи: «завтра купить хлеб в 15:30»
-# ----------------------------------------------------------------------------
 def parse_task_text(text):
     working = text
     day = None
@@ -156,21 +141,17 @@ def parse_task_text(text):
     return title, due_iso, has_time
 
 
-# ----------------------------------------------------------------------------
-# Операции с задачами
-# ----------------------------------------------------------------------------
-def add_task(title, due_iso, has_time):
+def add_task(title, due_iso, has_time, someday=False):
     task_id = str(uuid_lib.uuid4()).upper()
     db.execute(
-        "INSERT INTO tasks (uuid,title,due_date,has_time,updated_at) VALUES (?,?,?,?,?)",
-        (task_id, title, due_iso or today_start_utc_iso(), int(has_time), time.time()),
+        "INSERT INTO tasks (uuid,title,due_date,has_time,is_someday,updated_at) VALUES (?,?,?,?,?,?)",
+        (task_id, title, due_iso, int(has_time), int(someday), time.time()),
     )
     db.commit()
     return task_id
 
 
 def rollover_overdue():
-    """Невыполненные задачи прошлых дней -> на сегодня (как обычные задачи)."""
     today = now_local().date()
     rows = db.execute(
         "SELECT uuid,due_date FROM tasks WHERE deleted=0 AND is_trashed=0 "
@@ -186,26 +167,21 @@ def rollover_overdue():
     db.commit()
 
 
-def today_tasks():
+def format_today_list():
     rollover_overdue()
     today = now_local().date()
     rows = db.execute(
         "SELECT * FROM tasks WHERE deleted=0 AND is_trashed=0 AND is_someday=0 "
-        "AND due_date IS NOT NULL ORDER BY has_time DESC, due_date"
+        "AND is_completed=0 AND due_date IS NOT NULL ORDER BY has_time DESC, due_date"
     ).fetchall()
-    return [r for r in rows if local_day(r["due_date"]) == today]
-
-
-def format_today_list():
-    rows = [r for r in today_tasks() if not r["is_completed"]]
+    rows = [r for r in rows if local_day(r["due_date"]) == today]
     if not rows:
         return "На сегодня ничего не запланировано 🎉"
     lines = ["✅ Задачи на сегодня:"]
     for r in rows:
         line = "• "
         if r["has_time"]:
-            dt = parse_iso(r["due_date"]).astimezone(TZ)
-            line += dt.strftime("%H:%M") + " — "
+            line += parse_iso(r["due_date"]).astimezone(TZ).strftime("%H:%M") + " — "
         line += r["title"]
         lines.append(line)
     return "\n".join(lines)
@@ -243,7 +219,7 @@ async def on_text(message: Message):
     if linked_chat() is None:
         meta_set("chat_id", message.chat.id)
     if message.chat.id != linked_chat():
-        return  # чужие сообщения игнорируем
+        return
 
     text = message.text.strip()
     if re.search(r"какие\s+дела", text, re.IGNORECASE) or text == "/today":
@@ -251,7 +227,7 @@ async def on_text(message: Message):
         return
 
     title, due_iso, has_time = parse_task_text(text)
-    add_task(title, due_iso, has_time)
+    add_task(title, due_iso or today_start_utc_iso(), has_time)
 
     day = local_day(due_iso) if due_iso else now_local().date()
     today = now_local().date()
@@ -333,7 +309,7 @@ async def api_changes(request: Request, since: float = 0):
     ]
 
 
-# ---- Вход по паролю ----
+# ---- Вход ----
 LOGIN_HTML = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <title>OsetrThings</title><style>
@@ -367,7 +343,7 @@ async def login(request: Request):
     return HTMLResponse(LOGIN_HTML.replace("ERR", '<div class="err">Неверный пароль</div>'))
 
 
-# ---- Веб-приложение (страница для iPhone) ----
+# ---- Веб-приложение ----
 APP_HTML = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -376,58 +352,166 @@ APP_HTML = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <link rel="manifest" href="/manifest.json">
 <title>OsetrThings</title><style>
 :root{color-scheme:dark}
+*{box-sizing:border-box}
 body{background:#1c1c1e;color:#eee;font-family:-apple-system,sans-serif;margin:0;
-padding:env(safe-area-inset-top) 14px 40px}
-h1{font-size:24px;margin:18px 4px 10px}
-h2{font-size:13px;color:#8e8e93;text-transform:uppercase;margin:20px 4px 6px}
-.add{display:flex;gap:8px;margin:10px 0}
+padding:env(safe-area-inset-top) 12px 60px}
+.tabs{display:flex;gap:4px;overflow-x:auto;padding:12px 0 8px;-webkit-overflow-scrolling:touch}
+.tabs button{white-space:nowrap;font-size:14px;padding:7px 12px;border-radius:16px;
+border:none;background:#2c2c2e;color:#aaa}
+.tabs button.on{background:#0a84ff;color:#fff}
+.add{display:flex;gap:8px;margin:6px 0 10px}
 .add input{flex:1;font-size:16px;padding:11px;border-radius:10px;border:none;
 background:#2c2c2e;color:#eee}
 .add button{font-size:20px;padding:0 16px;border-radius:10px;border:none;
 background:#0a84ff;color:#fff}
-.task{display:flex;align-items:flex-start;gap:10px;padding:9px 4px;
+h2{font-size:13px;color:#8e8e93;margin:16px 4px 4px;font-weight:600}
+.task{display:flex;align-items:flex-start;gap:10px;padding:10px 4px;
 border-bottom:1px solid #2c2c2e}
 .box{width:20px;height:20px;border:1.5px solid #8e8e93;border-radius:5px;
 flex-shrink:0;margin-top:1px}
 .done .box{background:#0a84ff;border-color:#0a84ff}
-.done .title{text-decoration:line-through;color:#8e8e93}
-.title{font-size:16px;line-height:1.35;word-break:break-word}
-.time{color:#ff453a;font-size:14px;font-variant-numeric:tabular-nums;margin-right:2px}
+.done .tt{text-decoration:line-through;color:#8e8e93}
+.body{flex:1;min-width:0}
+.tt{font-size:16px;line-height:1.35;word-break:break-word}
+.sub{font-size:13px;color:#8e8e93;margin-top:2px;white-space:nowrap;overflow:hidden;
+text-overflow:ellipsis}
+.time{color:#ff453a;font-variant-numeric:tabular-nums;margin-right:4px;font-size:14px}
 .star{color:#ffd60a;font-size:12px}
-.hint{color:#8e8e93;font-size:14px;padding:8px 4px}
+.hint{color:#8e8e93;font-size:14px;padding:10px 4px}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;
+align-items:flex-end;justify-content:center;z-index:9}
+.sheet{background:#242426;border-radius:16px 16px 0 0;width:100%;max-width:560px;
+padding:16px 16px calc(16px + env(safe-area-inset-bottom));display:flex;
+flex-direction:column;gap:10px}
+.sheet textarea{width:100%;background:#2c2c2e;color:#eee;border:none;border-radius:10px;
+padding:10px;font-size:16px;font-family:inherit;resize:vertical}
+.row{display:flex;align-items:center;justify-content:space-between;font-size:15px}
+.row input{background:#2c2c2e;color:#eee;border:none;border-radius:8px;padding:8px;
+font-size:15px;color-scheme:dark}
+.btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px}
+.btns button{flex:1;min-width:96px;font-size:15px;padding:11px;border-radius:10px;
+border:none;background:#3a3a3c;color:#eee}
+.btns .primary{background:#0a84ff;color:#fff;font-weight:600}
+.btns .danger{background:#3a3a3c;color:#ff453a}
 </style></head><body>
-<h1>⭐ Сегодня</h1>
+<div class="tabs" id="tabs">
+<button data-t="today" class="on">★ Сегодня</button>
+<button data-t="upcoming">Планы</button>
+<button data-t="inbox">Входящие</button>
+<button data-t="someday">Когда-нибудь</button>
+<button data-t="logbook">Журнал</button>
+<button data-t="trash">Корзина</button>
+</div>
 <div class="add"><input id="inp" placeholder="Новая задача (завтра, 15:30…)"
 enterkeyhint="done"><button onclick="add()">＋</button></div>
-<div id="today"></div>
-<h2>Ближайшие 7 дней</h2><div id="week"></div>
-<h2>Входящие / без даты</h2><div id="inbox"></div>
+<div id="list"></div>
+
+<div id="modal" class="overlay" style="display:none" onclick="if(event.target===this)closeModal()">
+<div class="sheet">
+<textarea id="m_title" rows="2" placeholder="Название"></textarea>
+<textarea id="m_note" rows="4" placeholder="Заметки"></textarea>
+<div class="row"><span>Дата</span><input type="date" id="m_date"></div>
+<div class="row"><span>Время</span><input type="time" id="m_time"></div>
+<div class="row"><span>Когда-нибудь</span><input type="checkbox" id="m_someday"></div>
+<div class="btns">
+<button class="primary" onclick="saveModal()">Сохранить</button>
+<button class="danger" id="m_trash" onclick="trashModal()">В корзину</button>
+<button id="m_restore" onclick="restoreModal()">Вернуть</button>
+<button class="danger" id="m_delete" onclick="deleteForever()">Удалить навсегда</button>
+</div>
+</div></div>
+
 <script>
-async function load(){
-  const r = await fetch('/web/tasks'); if(r.status===401){location='/login';return}
-  const d = await r.json();
-  render('today', d.today, true); render('week', d.week, false, true);
-  render('inbox', d.inbox, false);
-}
-function esc(s){const e=document.createElement('span');e.textContent=s;return e.innerHTML}
-function render(id, items, star, showDay){
-  const el = document.getElementById(id);
-  if(!items.length){el.innerHTML='<div class="hint">Пусто</div>';return}
-  el.innerHTML = items.map(t=>`<div class="task ${t.is_completed?'done':''}"
-   onclick="toggle('${t.uuid}')"><div class="box"></div><div>
-   ${star&&!t.is_completed?'<span class="star">★</span> ':''}
-   ${t.time?'<span class="time">'+t.time+'</span> ':''}
-   ${showDay&&t.day?'<span class="time">'+t.day+'</span> ':''}
-   <span class="title">${esc(t.title)}</span></div></div>`).join('');
-}
-async function toggle(u){await fetch('/web/toggle',{method:'POST',
- headers:{'Content-Type':'application/json'},body:JSON.stringify({uuid:u})});load()}
-async function add(){const i=document.getElementById('inp');
- const v=i.value.trim();if(!v)return;i.value='';
- await fetch('/web/add',{method:'POST',headers:{'Content-Type':'application/json'},
- body:JSON.stringify({text:v})});load()}
+let TODAY='', tasks=[], tab='today', cur=null;
+
+document.getElementById('tabs').addEventListener('click', e=>{
+  const b=e.target.closest('button'); if(!b)return;
+  tab=b.dataset.t;
+  document.querySelectorAll('.tabs button').forEach(x=>x.classList.toggle('on',x===b));
+  render();
+});
 document.getElementById('inp').addEventListener('keydown',e=>{if(e.key==='Enter')add()});
-load(); setInterval(load, 60000);
+
+async function load(){
+  const r=await fetch('/web/all'); if(r.status===401){location='/login';return}
+  const d=await r.json(); TODAY=d.today; tasks=d.tasks; render();
+}
+function esc(s){const e=document.createElement('span');e.textContent=s||'';return e.innerHTML}
+function bucket(t){
+  if(t.deleted)return null;
+  if(t.is_trashed)return 'trash';
+  if(t.is_completed)return 'logbook';
+  if(t.is_someday)return 'someday';
+  if(!t.day)return 'inbox';
+  return t.day<=TODAY?'today':'upcoming';
+}
+function row(t,showDay){
+  return `<div class="task ${t.is_completed?'done':''}">
+  <div class="box" onclick="toggle('${t.uuid}');event.stopPropagation()"></div>
+  <div class="body" onclick="openModal('${t.uuid}')">
+   <div class="tt">${tab==='today'&&!t.is_completed?'<span class=star>★</span> ':''}
+    ${t.time?'<span class=time>'+t.time+'</span>':''}
+    ${showDay&&t.day?'<span class=time>'+t.day.slice(8,10)+'.'+t.day.slice(5,7)+'</span>':''}
+    ${esc(t.title)}</div>
+   ${t.note?'<div class="sub">'+esc(t.note)+'</div>':''}
+  </div></div>`;
+}
+function render(){
+  const el=document.getElementById('list');
+  let items=tasks.filter(t=>bucket(t)===tab);
+  if(!items.length){el.innerHTML='<div class="hint">Пусто</div>';return}
+  if(tab==='today'){
+    items.sort((a,b)=>(a.time===null)-(b.time===null)||String(a.time).localeCompare(String(b.time)));
+    el.innerHTML=items.map(t=>row(t)).join('');
+  }else if(tab==='upcoming'){
+    items.sort((a,b)=>a.day.localeCompare(b.day)||String(a.time).localeCompare(String(b.time)));
+    let html='',day='';
+    for(const t of items){
+      if(t.day!==day){day=t.day;html+='<h2>'+day.slice(8,10)+'.'+day.slice(5,7)+'.'+day.slice(0,4)+'</h2>'}
+      html+=row(t);
+    }
+    el.innerHTML=html;
+  }else if(tab==='logbook'){
+    el.innerHTML=items.reverse().map(t=>row(t,true)).join('');
+  }else{
+    el.innerHTML=items.map(t=>row(t,tab==='trash')).join('');
+  }
+}
+async function post(url,body){
+  await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify(body)});
+  await load();
+}
+async function add(){
+  const i=document.getElementById('inp');const v=i.value.trim();if(!v)return;i.value='';
+  await post('/web/add',{text:v,target:tab});
+}
+async function toggle(u){await post('/web/toggle',{uuid:u})}
+function openModal(u){
+  cur=tasks.find(t=>t.uuid===u);if(!cur)return;
+  m_title.value=cur.title;m_note.value=cur.note||'';
+  m_date.value=cur.day||'';m_time.value=cur.time||'';
+  m_someday.checked=!!cur.is_someday;
+  m_trash.style.display=cur.is_trashed?'none':'';
+  m_restore.style.display=cur.is_trashed?'':'none';
+  m_delete.style.display=cur.is_trashed?'':'none';
+  modal.style.display='flex';
+}
+function closeModal(){modal.style.display='none';cur=null}
+async function saveModal(){
+  if(!cur)return;
+  await post('/web/update',{uuid:cur.uuid,title:m_title.value.trim(),
+   note:m_note.value.trim(),date:m_date.value||null,time:m_time.value||null,
+   is_someday:m_someday.checked});
+  closeModal();
+}
+async function trashModal(){if(!cur)return;
+  await post('/web/update',{uuid:cur.uuid,is_trashed:true});closeModal()}
+async function restoreModal(){if(!cur)return;
+  await post('/web/update',{uuid:cur.uuid,is_trashed:false});closeModal()}
+async function deleteForever(){if(!cur)return;
+  await post('/web/update',{uuid:cur.uuid,deleted:true});closeModal()}
+load();setInterval(load,60000);
 </script></body></html>"""
 
 
@@ -448,41 +532,29 @@ async def manifest():
     }
 
 
-@app.get("/web/tasks")
-async def web_tasks(request: Request):
+def task_dto(r):
+    day = time_str = None
+    if r["due_date"]:
+        dt = parse_iso(r["due_date"]).astimezone(TZ)
+        day = dt.strftime("%Y-%m-%d")
+        if r["has_time"]:
+            time_str = dt.strftime("%H:%M")
+    return {
+        "uuid": r["uuid"], "title": r["title"], "note": r["note"],
+        "is_completed": bool(r["is_completed"]), "is_someday": bool(r["is_someday"]),
+        "is_trashed": bool(r["is_trashed"]), "deleted": bool(r["deleted"]),
+        "day": day, "time": time_str,
+    }
+
+
+@app.get("/web/all")
+async def web_all(request: Request):
     if not web_authorized(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     rollover_overdue()
-    today = now_local().date()
-    week_end = today + timedelta(days=7)
-    rows = db.execute(
-        "SELECT * FROM tasks WHERE deleted=0 AND is_trashed=0 "
-        "ORDER BY has_time DESC, due_date, updated_at"
-    ).fetchall()
-
-    def dto(r, with_day=False):
-        item = {"uuid": r["uuid"], "title": r["title"],
-                "is_completed": bool(r["is_completed"]), "time": None, "day": None}
-        if r["has_time"] and r["due_date"]:
-            item["time"] = parse_iso(r["due_date"]).astimezone(TZ).strftime("%H:%M")
-        if with_day and r["due_date"]:
-            item["day"] = local_day(r["due_date"]).strftime("%d.%m")
-        return item
-
-    today_list, week_list, inbox_list = [], [], []
-    for r in rows:
-        if r["is_someday"]:
-            continue
-        d = local_day(r["due_date"])
-        if d == today:
-            today_list.append(dto(r))
-        elif d and today < d <= week_end and not r["is_completed"]:
-            week_list.append(dto(r, with_day=True))
-        elif d is None and not r["is_completed"]:
-            inbox_list.append(dto(r))
-
-    today_list.sort(key=lambda x: (x["is_completed"], x["time"] is None, x["time"] or ""))
-    return {"today": today_list, "week": week_list, "inbox": inbox_list}
+    rows = db.execute("SELECT * FROM tasks WHERE deleted=0 ORDER BY updated_at").fetchall()
+    return {"today": now_local().strftime("%Y-%m-%d"),
+            "tasks": [task_dto(r) for r in rows]}
 
 
 @app.post("/web/add")
@@ -490,8 +562,15 @@ async def web_add(request: Request):
     if not web_authorized(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     body = await request.json()
-    title, due_iso, has_time = parse_task_text(str(body.get("text", "")).strip())
-    add_task(title, due_iso, has_time)
+    text = str(body.get("text", "")).strip()
+    target = body.get("target", "today")
+    title, due_iso, has_time = parse_task_text(text)
+    if target == "someday":
+        add_task(title, None, False, someday=True)
+    elif target == "inbox":
+        add_task(title, due_iso, has_time)  # без даты, если не указана в тексте
+    else:
+        add_task(title, due_iso or today_start_utc_iso(), has_time)
     return {"ok": True}
 
 
@@ -504,5 +583,55 @@ async def web_toggle(request: Request):
         "UPDATE tasks SET is_completed = 1 - is_completed, updated_at=? WHERE uuid=?",
         (time.time(), body.get("uuid", "")),
     )
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/web/update")
+async def web_update(request: Request):
+    if not web_authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    body = await request.json()
+    uid = body.get("uuid", "")
+    row = db.execute("SELECT * FROM tasks WHERE uuid=?", (uid,)).fetchone()
+    if not row:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    fields = {}
+    if "title" in body:
+        fields["title"] = str(body["title"]) or row["title"]
+    if "note" in body:
+        fields["note"] = str(body["note"])
+    if "is_someday" in body:
+        fields["is_someday"] = int(bool(body["is_someday"]))
+    if "is_trashed" in body:
+        fields["is_trashed"] = int(bool(body["is_trashed"]))
+    if "is_completed" in body:
+        fields["is_completed"] = int(bool(body["is_completed"]))
+    if "deleted" in body:
+        fields["deleted"] = int(bool(body["deleted"]))
+
+    # Дата и время: date "YYYY-MM-DD" | null, time "HH:MM" | null
+    if "date" in body:
+        date_str = body.get("date")
+        time_str = body.get("time")
+        if date_str:
+            y, mo, d = (int(x) for x in date_str.split("-"))
+            dt = datetime(y, mo, d, tzinfo=TZ)
+            has_time = False
+            if time_str:
+                h, mi = (int(x) for x in time_str.split(":"))
+                dt = dt.replace(hour=h, minute=mi)
+                has_time = True
+            fields["due_date"] = to_utc_iso(dt)
+            fields["has_time"] = int(has_time)
+            fields["is_someday"] = 0
+        else:
+            fields["due_date"] = None
+            fields["has_time"] = 0
+
+    fields["updated_at"] = time.time()
+    sets = ", ".join(f"{k}=?" for k in fields)
+    db.execute(f"UPDATE tasks SET {sets} WHERE uuid=?", (*fields.values(), uid))
     db.commit()
     return {"ok": True}
