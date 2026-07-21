@@ -397,31 +397,36 @@ APP_HTML = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <title>OsetrThings</title><style>
 :root{color-scheme:dark}
 *{box-sizing:border-box}
+html,body{height:100%}
+/* Колонка: шапка фиксирована, список прокручивается независимо (важно для iPhone) */
 body{background:#1c1c1e;color:#eee;font-family:-apple-system,sans-serif;margin:0;
-padding:env(safe-area-inset-top) 12px 60px}
+display:flex;flex-direction:column;overflow:hidden;
+padding:env(safe-area-inset-top) 12px 0}
+.head{flex:0 0 auto}
+#list{flex:1 1 auto;overflow-y:auto;-webkit-overflow-scrolling:touch;
+padding-bottom:calc(40px + env(safe-area-inset-bottom))}
 .tabs{display:flex;gap:4px;overflow-x:auto;padding:12px 0 8px;-webkit-overflow-scrolling:touch}
-.tabs button{white-space:nowrap;font-size:14px;padding:7px 12px;border-radius:16px;
+.tabs button{white-space:nowrap;font-size:15px;padding:8px 13px;border-radius:16px;
 border:none;background:#2c2c2e;color:#aaa}
 .tabs button.on{background:#0a84ff;color:#fff}
 .add{display:flex;gap:8px;margin:6px 0 10px}
-.add input{flex:1;font-size:16px;padding:11px;border-radius:10px;border:none;
+.add input{flex:1;font-size:17px;padding:12px;border-radius:10px;border:none;
 background:#2c2c2e;color:#eee}
-.add button{font-size:20px;padding:0 16px;border-radius:10px;border:none;
+.add button{font-size:22px;padding:0 18px;border-radius:10px;border:none;
 background:#0a84ff;color:#fff}
-h2{font-size:13px;color:#8e8e93;margin:16px 4px 4px;font-weight:600}
-.task{display:flex;align-items:flex-start;gap:10px;padding:10px 4px;
+h2{font-size:14px;color:#8e8e93;margin:16px 4px 4px;font-weight:600}
+.task{display:flex;align-items:flex-start;gap:11px;padding:12px 4px;
 border-bottom:1px solid #2c2c2e}
-.box{width:20px;height:20px;border:1.5px solid #8e8e93;border-radius:5px;
+.box{width:22px;height:22px;border:1.5px solid #8e8e93;border-radius:5px;
 flex-shrink:0;margin-top:1px}
 .done .box{background:#0a84ff;border-color:#0a84ff}
 .done .tt{text-decoration:line-through;color:#8e8e93}
 .body{flex:1;min-width:0}
-.tt{font-size:16px;line-height:1.35;word-break:break-word}
-.sub{font-size:13px;color:#8e8e93;margin-top:2px;white-space:nowrap;overflow:hidden;
-text-overflow:ellipsis}
-.time{color:#ff453a;font-variant-numeric:tabular-nums;margin-right:4px;font-size:14px}
-.star{color:#ffd60a;font-size:12px}
-.hint{color:#8e8e93;font-size:14px;padding:10px 4px}
+.tt{font-size:18px;line-height:1.35;word-break:break-word}
+.doc{margin-left:6px;color:#8e8e93;font-size:15px}
+.time{color:#ff453a;font-variant-numeric:tabular-nums;margin-right:4px;font-size:15px}
+.star{color:#ffd60a;font-size:13px}
+.hint{color:#8e8e93;font-size:15px;padding:10px 4px}
 .badge{font-size:11px;color:#8e8e93;background:#2c2c2e;border-radius:8px;
 padding:1px 7px;margin-left:6px;white-space:nowrap}
 .tagchip{font-size:11px;border-radius:8px;padding:1px 7px;margin-left:4px;white-space:nowrap}
@@ -446,6 +451,7 @@ border:none;background:#3a3a3c;color:#eee}
 .btns .primary{background:#0a84ff;color:#fff;font-weight:600}
 .btns .danger{background:#3a3a3c;color:#ff453a}
 </style></head><body>
+<div class="head">
 <div class="tabs" id="tabs">
 <button data-t="today" class="on">★ Сегодня</button>
 <button data-t="upcoming">Планы</button>
@@ -457,12 +463,13 @@ border:none;background:#3a3a3c;color:#eee}
 </div>
 <div class="add"><input id="inp" placeholder="Новая задача (завтра, 15:30…)"
 enterkeyhint="done"><button onclick="add()">＋</button></div>
+</div>
 <div id="list"></div>
 
 <div id="modal" class="overlay" style="display:none" onclick="if(event.target===this)closeModal()">
 <div class="sheet">
 <textarea id="m_title" rows="2" placeholder="Название"></textarea>
-<textarea id="m_note" rows="3" placeholder="Заметки"></textarea>
+<textarea id="m_note" rows="5" placeholder="Заметки" style="max-height:45vh"></textarea>
 <div id="m_check"></div>
 <div class="row" style="gap:8px">
  <input id="m_newitem" placeholder="＋ пункт чек-листа" style="flex:1"
@@ -517,11 +524,11 @@ function row(t,showDay){
     ${t.time?'<span class=time>'+t.time+'</span>':''}
     ${showDay&&t.day?'<span class=time>'+t.day.slice(8,10)+'.'+t.day.slice(5,7)+'</span>':''}
     ${esc(t.title)}
+    ${t.note?'<span class=doc title="есть заметка">📄</span>':''}
     ${cl.length?'<span class=badge>'+done+'/'+cl.length+'</span>':''}
     ${t.project?'<span class=badge>'+esc(t.project)+'</span>':''}
     ${(t.tags||[]).map(x=>'<span class=tagchip style="color:#'+x.color+';background:#'+x.color+'22">'+esc(x.name)+'</span>').join('')}
    </div>
-   ${t.note?'<div class="sub">'+esc(t.note)+'</div>':''}
   </div></div>`;
 }
 function render(){
