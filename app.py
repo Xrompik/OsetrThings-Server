@@ -52,6 +52,15 @@ db.execute("""CREATE TABLE IF NOT EXISTS tasks (
     updated_at REAL NOT NULL DEFAULT 0,
     deleted INTEGER NOT NULL DEFAULT 0
 )""")
+db.execute("""CREATE TABLE IF NOT EXISTS debts (
+    uuid TEXT PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '',
+    amount REAL NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    is_paid INTEGER NOT NULL DEFAULT 0,
+    is_trashed INTEGER NOT NULL DEFAULT 0,
+    updated_at REAL NOT NULL DEFAULT 0
+)""")
 db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
 # Новые колонки (проекты, теги, чек-листы) — добавляем к существующей базе
 for _ddl in (
@@ -352,6 +361,43 @@ async def api_changes(request: Request, since: float = 0):
     ]
 
 
+# ---- API: долги ----
+@app.post("/api/debts/upsert")
+async def api_debts_upsert(request: Request):
+    if not api_authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    d = await request.json()
+    db.execute(
+        """INSERT INTO debts (uuid,title,amount,note,is_paid,is_trashed,updated_at)
+           VALUES (?,?,?,?,?,?,?)
+           ON CONFLICT(uuid) DO UPDATE SET
+           title=excluded.title, amount=excluded.amount, note=excluded.note,
+           is_paid=excluded.is_paid, is_trashed=excluded.is_trashed,
+           updated_at=excluded.updated_at
+           WHERE excluded.updated_at >= debts.updated_at""",
+        (d["uuid"], d.get("title", ""), float(d.get("amount", 0)), d.get("note", ""),
+         int(d.get("is_paid", False)), int(d.get("is_trashed", False)),
+         d.get("updated_at", time.time())),
+    )
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/debts/changes")
+async def api_debts_changes(request: Request, since: float = 0):
+    if not api_authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    rows = db.execute("SELECT * FROM debts WHERE updated_at > ?", (since,)).fetchall()
+    return [
+        {
+            "uuid": r["uuid"], "title": r["title"], "amount": r["amount"],
+            "note": r["note"], "is_paid": bool(r["is_paid"]),
+            "is_trashed": bool(r["is_trashed"]), "updated_at": r["updated_at"],
+        }
+        for r in rows
+    ]
+
+
 # ---- Вход ----
 LOGIN_HTML = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
@@ -458,6 +504,7 @@ border:none;background:#3a3a3c;color:#eee}
 <button data-t="projects">Проекты</button>
 <button data-t="inbox">Входящие</button>
 <button data-t="someday">Когда-нибудь</button>
+<button data-t="debts">₽ Долги</button>
 <button data-t="logbook">Журнал</button>
 <button data-t="trash">Корзина</button>
 </div>
@@ -491,20 +538,24 @@ enterkeyhint="done"><button onclick="add()">＋</button></div>
 </div></div>
 
 <script>
-let TODAY='', tasks=[], tab='today', cur=null, PROJECTS=[];
+let TODAY='', tasks=[], tab='today', cur=null, PROJECTS=[], DEBTS=[];
 
 document.getElementById('tabs').addEventListener('click', e=>{
   const b=e.target.closest('button'); if(!b)return;
   tab=b.dataset.t;
   document.querySelectorAll('.tabs button').forEach(x=>x.classList.toggle('on',x===b));
+  document.getElementById('inp').placeholder = tab==='debts'
+    ? 'Долг: 5000 Иван за обед' : 'Новая задача (завтра, 15:30…)';
   render();
 });
 document.getElementById('inp').addEventListener('keydown',e=>{if(e.key==='Enter')add()});
 
 async function load(){
   const r=await fetch('/web/all'); if(r.status===401){location='/login';return}
-  const d=await r.json(); TODAY=d.today; tasks=d.tasks; PROJECTS=d.projects||[]; render();
+  const d=await r.json(); TODAY=d.today; tasks=d.tasks; PROJECTS=d.projects||[];
+  DEBTS=d.debts||[]; render();
 }
+function money(v){return (Math.round(v*100)/100).toLocaleString('ru-RU')+' ₽'}
 function esc(s){const e=document.createElement('span');e.textContent=s||'';return e.innerHTML}
 function bucket(t){
   if(t.deleted)return null;
@@ -531,8 +582,30 @@ function row(t,showDay){
    </div>
   </div></div>`;
 }
+function debtRow(d){
+  return `<div class="task ${d.is_paid?'done':''}">
+   <div class="box" style="border-radius:50%" onclick="debtToggle('${d.uuid}');event.stopPropagation()"></div>
+   <div class="body">
+     <div class="tt">${esc(d.title)}${d.note?'<span class=doc>📄</span>':''}</div>
+     ${d.note?'<div class="sub" style="white-space:normal;color:#8e8e93;font-size:14px">'+esc(d.note)+'</div>':''}
+   </div>
+   <div style="font-weight:600;white-space:nowrap">${money(d.amount)}</div>
+   <div class="del" style="color:#8e8e93;padding:0 4px" onclick="debtDelete('${d.uuid}')">✕</div>
+  </div>`;
+}
 function render(){
   const el=document.getElementById('list');
+  if(tab==='debts'){
+    const live=DEBTS.filter(d=>!d.is_trashed);
+    const unpaid=live.filter(d=>!d.is_paid), paid=live.filter(d=>d.is_paid);
+    const total=unpaid.reduce((s,d)=>s+d.amount,0);
+    let html='<h2 style="font-size:16px;color:#eee">Всего должны: '+money(total)+'</h2>';
+    html+='<h2>Не погашено</h2>';
+    html+= unpaid.length?unpaid.map(debtRow).join(''):'<div class="hint">Нет активных долгов</div>';
+    if(paid.length){html+='<h2>Погашено</h2>'+paid.map(debtRow).join('')}
+    el.innerHTML=html;
+    return;
+  }
   if(tab==='projects'){
     // Все открытые задачи, сгруппированные по проектам (спискам)
     const open=tasks.filter(t=>!t.deleted&&!t.is_trashed&&!t.is_completed);
@@ -575,9 +648,19 @@ async function post(url,body){
 }
 async function add(){
   const i=document.getElementById('inp');const v=i.value.trim();if(!v)return;i.value='';
+  if(tab==='debts'){
+    // «5000 Иван за обед» → сумма + название
+    const m=v.match(/^\s*([0-9]+(?:[.,][0-9]+)?)\s+(.+)$/);
+    const amount=m?parseFloat(m[1].replace(',','.')):0;
+    const title=m?m[2]:v;
+    await post('/web/debt_add',{title:title,amount:amount});
+    return;
+  }
   await post('/web/add',{text:v,target:tab});
 }
 async function toggle(u){await post('/web/toggle',{uuid:u})}
+async function debtToggle(u){await post('/web/debt_toggle',{uuid:u})}
+async function debtDelete(u){await post('/web/debt_delete',{uuid:u})}
 let editCheck=[];
 function renderCheck(){
   m_check.innerHTML=editCheck.map((c,i)=>`<div class="ci ${c.done?'don':''}">
@@ -667,9 +750,51 @@ async def web_all(request: Request):
     rollover_overdue()
     rows = db.execute("SELECT * FROM tasks WHERE deleted=0 ORDER BY updated_at").fetchall()
     projects = sorted({r["project"] for r in rows if r["project"]})
+    debt_rows = db.execute(
+        "SELECT * FROM debts WHERE is_trashed=0 ORDER BY updated_at DESC").fetchall()
+    debts = [{"uuid": d["uuid"], "title": d["title"], "amount": d["amount"],
+              "note": d["note"], "is_paid": bool(d["is_paid"]),
+              "is_trashed": bool(d["is_trashed"])} for d in debt_rows]
     return {"today": now_local().strftime("%Y-%m-%d"),
             "tasks": [task_dto(r) for r in rows],
-            "projects": projects}
+            "projects": projects,
+            "debts": debts}
+
+
+@app.post("/web/debt_add")
+async def web_debt_add(request: Request):
+    if not web_authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    body = await request.json()
+    db.execute(
+        "INSERT INTO debts (uuid,title,amount,note,updated_at) VALUES (?,?,?,?,?)",
+        (str(uuid_lib.uuid4()).upper(), str(body.get("title", "")).strip(),
+         float(body.get("amount", 0) or 0), "", time.time()),
+    )
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/web/debt_toggle")
+async def web_debt_toggle(request: Request):
+    if not web_authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    body = await request.json()
+    db.execute("UPDATE debts SET is_paid = 1 - is_paid, updated_at=? WHERE uuid=?",
+               (time.time(), body.get("uuid", "")))
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/web/debt_delete")
+async def web_debt_delete(request: Request):
+    if not web_authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    body = await request.json()
+    db.execute("UPDATE debts SET is_trashed=1, updated_at=? WHERE uuid=?",
+               (time.time(), body.get("uuid", "")))
+    db.commit()
+    return {"ok": True}
 
 
 @app.get("/icon.png")
