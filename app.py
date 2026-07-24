@@ -484,8 +484,11 @@ padding:1px 7px;margin-left:6px;white-space:nowrap}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;
 align-items:flex-end;justify-content:center;z-index:9}
 .sheet{background:#242426;border-radius:16px 16px 0 0;width:100%;max-width:560px;
+max-height:92vh;overflow-y:auto;-webkit-overflow-scrolling:touch;
 padding:16px 16px calc(16px + env(safe-area-inset-bottom));display:flex;
-flex-direction:column;gap:10px}
+flex-direction:column;gap:9px}
+.row .sym{font-size:18px;width:26px;text-align:center;flex:0 0 auto}
+.row{gap:8px}
 .sheet textarea{width:100%;background:#2c2c2e;color:#eee;border:none;border-radius:10px;
 padding:10px;font-size:16px;font-family:inherit;resize:vertical}
 .row{display:flex;align-items:center;justify-content:space-between;font-size:15px}
@@ -516,19 +519,20 @@ enterkeyhint="done"><button onclick="add()">＋</button></div>
 <div id="modal" class="overlay" style="display:none" onclick="if(event.target===this)closeModal()">
 <div class="sheet">
 <textarea id="m_title" rows="2" placeholder="Название"></textarea>
-<textarea id="m_note" rows="5" placeholder="Заметки" style="max-height:45vh"></textarea>
+<textarea id="m_note" rows="7" placeholder="Заметки" style="max-height:50vh"></textarea>
 <div id="m_check"></div>
-<div class="row" style="gap:8px">
- <input id="m_newitem" placeholder="＋ пункт чек-листа" style="flex:1"
-  onkeydown="if(event.key==='Enter')addCheck()">
-</div>
-<div class="row"><span>Проект</span>
- <input id="m_project" list="projlist" placeholder="без проекта"><datalist id="projlist"></datalist></div>
-<div class="row"><span>Теги</span>
- <input id="m_tags" placeholder="через запятую" style="min-width:55%"></div>
-<div class="row"><span>Дата</span><input type="date" id="m_date"></div>
-<div class="row"><span>Время</span><input type="time" id="m_time"></div>
-<div class="row"><span>Когда-нибудь</span><input type="checkbox" id="m_someday"></div>
+<div class="row">
+ <span class="sym">☑︎</span>
+ <input id="m_newitem" placeholder="пункт чек-листа" style="flex:1"
+  onkeydown="if(event.key==='Enter')addCheck()"></div>
+<div class="row"><span class="sym">📁</span>
+ <input id="m_project" list="projlist" placeholder="проект" style="flex:1"><datalist id="projlist"></datalist></div>
+<div class="row"><span class="sym">🏷️</span>
+ <input id="m_tags" placeholder="теги через запятую" style="flex:1"></div>
+<div class="row"><span class="sym">📅</span><input type="date" id="m_date" style="flex:1"></div>
+<div class="row"><span class="sym">🕐</span><input type="time" id="m_time" style="flex:1"></div>
+<div class="row"><span class="sym">🗄️</span><span style="flex:1">Когда-нибудь</span>
+ <input type="checkbox" id="m_someday"></div>
 <div class="btns">
 <button class="primary" onclick="saveModal()">Сохранить</button>
 <button class="danger" id="m_trash" onclick="trashModal()">В корзину</button>
@@ -593,6 +597,16 @@ function debtRow(d){
    <div class="del" style="color:#8e8e93;padding:0 4px" onclick="debtDelete('${d.uuid}')">✕</div>
   </div>`;
 }
+// Группировка по проектам, если задачи из ≥2 проектов; иначе просто список
+function groupedHTML(items, showDay){
+  const projs=new Set(items.map(t=>t.project||''));
+  if(projs.size<2) return items.map(t=>row(t,showDay)).join('');
+  const groups={};
+  for(const t of items){const k=t.project||'Без проекта';(groups[k]=groups[k]||[]).push(t)}
+  const keys=Object.keys(groups).sort((a,b)=>
+    (a==='Без проекта')-(b==='Без проекта')||a.localeCompare(b,'ru'));
+  return keys.map(k=>'<h2>'+esc(k)+'</h2>'+groups[k].map(t=>row(t,showDay)).join('')).join('');
+}
 function render(){
   const el=document.getElementById('list');
   if(tab==='debts'){
@@ -626,7 +640,7 @@ function render(){
   if(!items.length){el.innerHTML='<div class="hint">Пусто</div>';return}
   if(tab==='today'){
     items.sort((a,b)=>(a.time===null)-(b.time===null)||String(a.time).localeCompare(String(b.time)));
-    el.innerHTML=items.map(t=>row(t)).join('');
+    el.innerHTML=groupedHTML(items);
   }else if(tab==='upcoming'){
     items.sort((a,b)=>a.day.localeCompare(b.day)||String(a.time).localeCompare(String(b.time)));
     let html='',day='';
@@ -638,7 +652,7 @@ function render(){
   }else if(tab==='logbook'){
     el.innerHTML=items.reverse().map(t=>row(t,true)).join('');
   }else{
-    el.innerHTML=items.map(t=>row(t,tab==='trash')).join('');
+    el.innerHTML=groupedHTML(items, tab==='trash');
   }
 }
 async function post(url,body){
