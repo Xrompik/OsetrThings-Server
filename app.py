@@ -481,24 +481,35 @@ padding:1px 7px;margin-left:6px;white-space:nowrap}
 .ci.don .cbox{background:#0a84ff;border-color:#0a84ff}
 .ci.don .ct{text-decoration:line-through;color:#8e8e93}
 .ci .del{margin-left:auto;color:#8e8e93;padding:0 6px}
-.overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;
-align-items:flex-end;justify-content:center;z-index:9}
-.sheet{background:#242426;border-radius:16px 16px 0 0;width:100%;max-width:560px;
-max-height:92vh;overflow-y:auto;-webkit-overflow-scrolling:touch;
-padding:16px 16px calc(16px + env(safe-area-inset-bottom));display:flex;
-flex-direction:column;gap:9px}
-.row .sym{font-size:18px;width:26px;text-align:center;flex:0 0 auto}
-.row{gap:8px}
-.sheet textarea{width:100%;background:#2c2c2e;color:#eee;border:none;border-radius:10px;
-padding:10px;font-size:16px;font-family:inherit;resize:vertical}
-.row{display:flex;align-items:center;justify-content:space-between;font-size:15px}
-.row input{background:#2c2c2e;color:#eee;border:none;border-radius:8px;padding:8px;
-font-size:15px;color-scheme:dark}
-.btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px}
-.btns button{flex:1;min-width:96px;font-size:15px;padding:11px;border-radius:10px;
-border:none;background:#3a3a3c;color:#eee}
-.btns .primary{background:#0a84ff;color:#fff;font-weight:600}
-.btns .danger{background:#3a3a3c;color:#ff453a}
+/* Окно задачи — на весь экран, как в Things на iPhone */
+.overlay{position:fixed;inset:0;background:#1c1c1e;z-index:9;display:flex;flex-direction:column;
+padding:env(safe-area-inset-top) 0 0}
+.mbar{display:flex;align-items:center;gap:8px;padding:8px 14px;flex:0 0 auto}
+.mbar .sp{flex:1}
+.mbar button{background:none;border:none;color:#0a84ff;font-size:17px;padding:6px}
+.mbody{flex:1 1 auto;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:6px 16px 16px}
+.mbody textarea{width:100%;background:none;color:#eee;border:none;font-family:inherit;resize:none}
+#m_title{font-size:22px;font-weight:600}
+#m_note{font-size:17px;min-height:32vh;line-height:1.4}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.mchip{font-size:14px;padding:4px 10px;border-radius:14px;background:#2c2c2e;color:#ddd;
+display:inline-flex;align-items:center;gap:5px}
+/* Нижняя панель символов */
+.toolbar{flex:0 0 auto;display:flex;gap:4px;justify-content:space-around;
+padding:10px 8px calc(10px + env(safe-area-inset-bottom));border-top:1px solid #2c2c2e;
+background:#161618}
+.toolbar button{background:none;border:none;font-size:24px;padding:6px 10px;border-radius:10px}
+.toolbar button.on{background:#2c2c2e}
+/* Выдвижная панель ввода над toolbar */
+.panel{flex:0 0 auto;background:#242426;border-top:1px solid #333;padding:12px 16px;
+display:none}
+.panel.show{display:block}
+.panel input{width:100%;background:#2c2c2e;color:#eee;border:none;border-radius:8px;
+padding:10px;font-size:16px;color-scheme:dark;margin-top:6px}
+.panel .quick{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+.panel .quick button{background:#2c2c2e;color:#0a84ff;border:none;border-radius:8px;
+padding:8px 12px;font-size:15px}
+.ci{display:flex;gap:10px;align-items:center;padding:7px 0;font-size:16px}
 </style></head><body>
 <div class="head">
 <div class="tabs" id="tabs">
@@ -516,30 +527,49 @@ enterkeyhint="done"><button onclick="add()">＋</button></div>
 </div>
 <div id="list"></div>
 
-<div id="modal" class="overlay" style="display:none" onclick="if(event.target===this)closeModal()">
-<div class="sheet">
-<textarea id="m_title" rows="2" placeholder="Название"></textarea>
-<textarea id="m_note" rows="7" placeholder="Заметки" style="max-height:50vh"></textarea>
-<div id="m_check"></div>
-<div class="row">
- <span class="sym">☑︎</span>
- <input id="m_newitem" placeholder="пункт чек-листа" style="flex:1"
-  onkeydown="if(event.key==='Enter')addCheck()"></div>
-<div class="row"><span class="sym">📁</span>
- <input id="m_project" list="projlist" placeholder="проект" style="flex:1"><datalist id="projlist"></datalist></div>
-<div class="row"><span class="sym">🏷️</span>
- <input id="m_tags" placeholder="теги через запятую" style="flex:1"></div>
-<div class="row"><span class="sym">📅</span><input type="date" id="m_date" style="flex:1"></div>
-<div class="row"><span class="sym">🕐</span><input type="time" id="m_time" style="flex:1"></div>
-<div class="row"><span class="sym">🗄️</span><span style="flex:1">Когда-нибудь</span>
- <input type="checkbox" id="m_someday"></div>
-<div class="btns">
-<button class="primary" onclick="saveModal()">Сохранить</button>
-<button class="danger" id="m_trash" onclick="trashModal()">В корзину</button>
-<button id="m_restore" onclick="restoreModal()">Вернуть</button>
-<button class="danger" id="m_delete" onclick="deleteForever()">Удалить навсегда</button>
+<div id="modal" class="overlay" style="display:none">
+ <div class="mbar">
+  <button onclick="saveModal()">‹ Готово</button>
+  <span class="sp"></span>
+  <button id="m_trash" onclick="trashModal()" style="color:#ff453a">🗑</button>
+  <button id="m_restore" onclick="restoreModal()" style="display:none">Вернуть</button>
+  <button id="m_delete" onclick="deleteForever()" style="display:none;color:#ff453a">Удалить</button>
+ </div>
+ <div class="mbody">
+  <textarea id="m_title" rows="1" placeholder="Название"></textarea>
+  <div class="chips" id="m_chips"></div>
+  <textarea id="m_note" placeholder="Заметки"></textarea>
+  <div id="m_check"></div>
+ </div>
+ <!-- Выдвижные панели ввода -->
+ <div class="panel" id="p_date">
+  <input type="date" id="m_date">
+  <div class="quick">
+   <button onclick="setQuickDate(0)">Сегодня</button>
+   <button onclick="setQuickDate(1)">Завтра</button>
+   <button onclick="m_date.value='';renderChips()">Убрать дату</button>
+  </div>
+ </div>
+ <div class="panel" id="p_time"><input type="time" id="m_time">
+  <div class="quick"><button onclick="m_time.value='';renderChips()">Убрать время</button></div></div>
+ <div class="panel" id="p_check">
+  <input id="m_newitem" placeholder="пункт чек-листа + Enter"
+   onkeydown="if(event.key==='Enter')addCheck()"></div>
+ <div class="panel" id="p_tags"><input id="m_tags" placeholder="теги через запятую"
+   oninput="renderChips()"></div>
+ <div class="panel" id="p_project"><input id="m_project" list="projlist" placeholder="проект"
+   oninput="renderChips()"><datalist id="projlist"></datalist>
+  <div class="quick"><button onclick="m_someday.checked=!m_someday.checked;renderChips()"
+   id="m_someday_btn">🗄️ Когда-нибудь</button></div>
+  <input type="checkbox" id="m_someday" style="display:none"></div>
+ <div class="toolbar">
+  <button onclick="togglePanel('p_date',this)">📅</button>
+  <button onclick="togglePanel('p_time',this)">🕐</button>
+  <button onclick="togglePanel('p_check',this)">☑︎</button>
+  <button onclick="togglePanel('p_tags',this)">🏷️</button>
+  <button onclick="togglePanel('p_project',this)">📁</button>
+ </div>
 </div>
-</div></div>
 
 <script>
 let TODAY='', tasks=[], tab='today', cur=null, PROJECTS=[], DEBTS=[];
@@ -601,11 +631,14 @@ function debtRow(d){
 function groupedHTML(items, showDay){
   const projs=new Set(items.map(t=>t.project||''));
   if(projs.size<2) return items.map(t=>row(t,showDay)).join('');
+  // Сначала задачи без проекта (без заголовка), затем проекты снизу с заголовками
+  const noproj=items.filter(t=>!t.project);
   const groups={};
-  for(const t of items){const k=t.project||'Без проекта';(groups[k]=groups[k]||[]).push(t)}
-  const keys=Object.keys(groups).sort((a,b)=>
-    (a==='Без проекта')-(b==='Без проекта')||a.localeCompare(b,'ru'));
-  return keys.map(k=>'<h2>'+esc(k)+'</h2>'+groups[k].map(t=>row(t,showDay)).join('')).join('');
+  for(const t of items){if(!t.project)continue;(groups[t.project]=groups[t.project]||[]).push(t)}
+  const keys=Object.keys(groups).sort((a,b)=>a.localeCompare(b,'ru'));
+  let html=noproj.map(t=>row(t,showDay)).join('');
+  html+=keys.map(k=>'<h2>'+esc(k)+'</h2>'+groups[k].map(t=>row(t,showDay)).join('')).join('');
+  return html;
 }
 function render(){
   const el=document.getElementById('list');
@@ -686,6 +719,32 @@ function addCheck(){
   const v=m_newitem.value.trim();if(!v)return;
   editCheck.push({text:v,done:false});m_newitem.value='';renderCheck();
 }
+// Панели ввода (открываются по символу снизу)
+function togglePanel(id,btn){
+  const p=document.getElementById(id);const show=!p.classList.contains('show');
+  document.querySelectorAll('.panel').forEach(x=>x.classList.remove('show'));
+  document.querySelectorAll('.toolbar button').forEach(x=>x.classList.remove('on'));
+  if(show){p.classList.add('show');if(btn)btn.classList.add('on');
+    const inp=p.querySelector('input:not([type=checkbox])');if(inp)setTimeout(()=>inp.focus(),50);}
+}
+function setQuickDate(off){
+  const d=new Date();d.setDate(d.getDate()+off);
+  m_date.value=d.toISOString().slice(0,10);m_someday.checked=false;renderChips();
+}
+function renderChips(){
+  let h='';
+  const today=new Date().toISOString().slice(0,10);
+  if(m_someday.checked){h+='<span class="mchip">🗄️ Когда-нибудь</span>';}
+  else if(m_date.value){
+    const lbl=m_date.value===today?'★ Сегодня':m_date.value.slice(8,10)+'.'+m_date.value.slice(5,7);
+    h+='<span class="mchip">📅 '+lbl+'</span>';
+  }
+  if(m_time.value){h+='<span class="mchip">🕐 '+m_time.value+'</span>';}
+  if(m_project.value.trim()){h+='<span class="mchip">📁 '+esc(m_project.value.trim())+'</span>';}
+  m_tags.value.split(',').map(s=>s.trim()).filter(Boolean).forEach(t=>{
+    h+='<span class="mchip">🏷️ '+esc(t)+'</span>';});
+  m_chips.innerHTML=h;
+}
 function openModal(u){
   cur=tasks.find(t=>t.uuid===u);if(!cur)return;
   m_title.value=cur.title;m_note.value=cur.note||'';
@@ -694,12 +753,15 @@ function openModal(u){
   m_project.value=cur.project||'';
   m_tags.value=(cur.tags||[]).map(x=>x.name).join(', ');
   editCheck=(cur.checklist||[]).map(x=>({text:x.text,done:!!x.done}));
-  renderCheck();
+  renderCheck();renderChips();
   projlist.innerHTML=PROJECTS.map(p=>'<option value="'+esc(p)+'">').join('');
+  document.querySelectorAll('.panel').forEach(x=>x.classList.remove('show'));
+  document.querySelectorAll('.toolbar button').forEach(x=>x.classList.remove('on'));
   m_trash.style.display=cur.is_trashed?'none':'';
   m_restore.style.display=cur.is_trashed?'':'none';
   m_delete.style.display=cur.is_trashed?'':'none';
   modal.style.display='flex';
+  m_title.style.height='auto';m_title.style.height=m_title.scrollHeight+'px';
 }
 function closeModal(){modal.style.display='none';cur=null}
 async function saveModal(){
